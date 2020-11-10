@@ -1,6 +1,6 @@
 # Unreleased
 
-- On Android, calling `WindowEvent::Focused` now works properly instead of always returning false. 
+- On Android, calling `WindowEvent::Focused` now works properly instead of always returning false.
 - On Windows, fix alt-tab behaviour by removing borderless fullscreen "always on top" flag.
 - On Windows, fix bug preventing windows with transparency enabled from having fully-opaque regions.
 - **Breaking:** On Windows, include prefix byte in scancodes.
@@ -10,6 +10,7 @@
 - On Web, fix `WindowEvent::ReceivedCharacter` never being sent on key input.
 - On macOS, fix compilation when targeting aarch64
 - On X11, fix `Window::request_redraw` not waking the event loop.
+- **Breaking:** `map_nonuser_event` now returns the unwrapped user event `T` in `Err()`.
 
 # 0.23.0 (2020-10-02)
 

@@ -14,22 +14,19 @@ use ndk::{
 use ndk_glue::{Event, Rect};
 use std::{
     collections::VecDeque,
+    os::unix::prelude::RawFd,
     sync::{Arc, Mutex, RwLock},
     time::{Duration, Instant},
 };
 
 lazy_static! {
     static ref CONFIG: RwLock<Configuration> = RwLock::new(Configuration::new());
-    // If this is `Some()` a `Poll::Wake` is considered an `EventSource::Internal` with the event
-    // contained in the `Option`. The event is moved outside of the `Option` replacing it with a
-    // `None`.
-    //
-    // This allows us to inject event into the event loop without going through `ndk-glue` and
-    // calling unsafe function that should only be called by Android.
-    static ref INTERNAL_EVENT: RwLock<Option<InternalEvent>> = RwLock::new(None);
 }
 
+#[derive(Clone, Copy, Debug)]
+#[repr(u8)]
 enum InternalEvent {
+    Invalid,
     RedrawRequested,
 }
 
@@ -37,24 +34,23 @@ enum EventSource {
     Callback,
     InputQueue,
     User,
-    Internal(InternalEvent),
+    Internal,
 }
+
+// TODO: Can be dangerous if ndk_glue decides to add a third pipe, too?
+// Or if applications building on top rely use the first free ID as well?
+const LOOPER_INTERNAL_EVENT_IDENT: i32 = ndk_glue::NDK_GLUE_LOOPER_INPUT_QUEUE_IDENT + 1;
 
 fn poll(poll: Poll) -> Option<EventSource> {
     match poll {
         Poll::Event { ident, .. } => match ident {
             ndk_glue::NDK_GLUE_LOOPER_EVENT_PIPE_IDENT => Some(EventSource::Callback),
             ndk_glue::NDK_GLUE_LOOPER_INPUT_QUEUE_IDENT => Some(EventSource::InputQueue),
+            LOOPER_INTERNAL_EVENT_IDENT => Some(EventSource::Internal),
             _ => unreachable!(),
         },
         Poll::Timeout => None,
-        Poll::Wake => Some(
-            INTERNAL_EVENT
-                .write()
-                .unwrap()
-                .take()
-                .map_or(EventSource::User, EventSource::Internal),
-        ),
+        Poll::Wake => Some(EventSource::User),
         Poll::Callback => unreachable!(),
     }
 }
@@ -65,6 +61,7 @@ pub struct EventLoop<T: 'static> {
     first_event: Option<EventSource>,
     start_cause: event::StartCause,
     looper: ThreadLooper,
+    internal_event_pipe: [RawFd; 2],
     running: bool,
 }
 
@@ -80,6 +77,20 @@ macro_rules! call_event_handler {
 
 impl<T: 'static> EventLoop<T> {
     pub fn new() -> Self {
+        let looper = ThreadLooper::for_thread().unwrap();
+        let mut internal_event_pipe: [RawFd; 2] = Default::default();
+        assert_eq!(unsafe { libc::pipe(internal_event_pipe.as_mut_ptr()) }, 0);
+
+        unsafe {
+            looper.as_foreign().add_fd(
+                internal_event_pipe[1],
+                LOOPER_INTERNAL_EVENT_IDENT,
+                ndk_sys::ALOOPER_EVENT_INPUT as i32,
+                std::ptr::null_mut(),
+            )
+        }
+        .unwrap();
+
         Self {
             window_target: event_loop::EventLoopWindowTarget {
                 p: EventLoopWindowTarget {
@@ -90,7 +101,8 @@ impl<T: 'static> EventLoop<T> {
             user_queue: Default::default(),
             first_event: None,
             start_cause: event::StartCause::Init,
-            looper: ThreadLooper::for_thread().unwrap(),
+            looper,
+            internal_event_pipe,
             running: false,
         }
     }
@@ -301,9 +313,24 @@ impl<T: 'static> EventLoop<T> {
                         );
                     }
                 }
-                Some(EventSource::Internal(internal)) => match internal {
-                    InternalEvent::RedrawRequested => redraw = true,
-                },
+                Some(EventSource::Internal) => {
+                    let mut event = InternalEvent::Invalid;
+                    const SIZE: usize = std::mem::size_of::<InternalEvent>();
+                    assert_eq!(
+                        unsafe {
+                            libc::read(
+                                self.internal_event_pipe[0],
+                                &mut event as *mut _ as *mut _,
+                                SIZE,
+                            )
+                        },
+                        SIZE as isize
+                    );
+                    match event {
+                        InternalEvent::RedrawRequested => redraw = true,
+                        InternalEvent::Invalid => unreachable!(),
+                    }
+                }
                 None => {}
             }
 
@@ -499,8 +526,17 @@ impl Window {
     }
 
     pub fn request_redraw(&self) {
-        *INTERNAL_EVENT.write().unwrap() = Some(InternalEvent::RedrawRequested);
-        ForeignLooper::for_thread().unwrap().wake();
+        const SIZE: usize = std::mem::size_of::<InternalEvent>();
+        assert_eq!(
+            unsafe {
+                libc::write(
+                    self.internal_event_pipe[1],
+                    &InternalEvent::RedrawRequested as *const _ as *const _,
+                    SIZE,
+                )
+            },
+            SIZE as isize
+        );
     }
 
     pub fn inner_position(&self) -> Result<PhysicalPosition<i32>, error::NotSupportedError> {

@@ -64,6 +64,8 @@
 //! 3. Add an `android_main` entrypoint (as above), instead of using the '`[ndk_glue::main]` proc macro from `ndk-macros` (optionally add a dependency on `android_logger` and initialize logging as above).
 //! 4. Pass a clone of the `AndroidApp` that your application receives to Winit when building your event loop (as shown above).
 
+use android_activity::input::InputEvent;
+
 use crate::{
     event_loop::{ActiveEventLoop, EventLoop, EventLoopBuilder},
     window::{Window, WindowAttributes},
@@ -108,11 +110,6 @@ pub trait EventLoopBuilderExtAndroid {
     ///
     /// This must be called on Android since the `AndroidApp` is not global state.
     fn with_android_app(&mut self, app: AndroidApp) -> &mut Self;
-
-    /// Calling this will mark the volume keys to be manually handled by the application
-    ///
-    /// Default is to let the operating system handle the volume keys
-    fn handle_volume_keys(&mut self) -> &mut Self;
 }
 
 impl<T> EventLoopBuilderExtAndroid for EventLoopBuilder<T> {
@@ -120,12 +117,13 @@ impl<T> EventLoopBuilderExtAndroid for EventLoopBuilder<T> {
         self.platform_specific.android_app = Some(app);
         self
     }
-
-    fn handle_volume_keys(&mut self) -> &mut Self {
-        self.platform_specific.ignore_volume_keys = false;
-        self
-    }
 }
+
+pub trait KeyEventExtAndroid {
+    fn override_handled_state(&mut self, handled: bool);
+}
+
+impl KeyEventExtAndroid for InputEvent {}
 
 /// Re-export of the `android_activity` API
 ///

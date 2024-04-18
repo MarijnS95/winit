@@ -153,21 +153,18 @@ pub struct EventLoop<T: 'static> {
     running: bool,
     pending_redraw: bool,
     cause: StartCause,
-    ignore_volume_keys: bool,
     combining_accent: Option<char>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PlatformSpecificEventLoopAttributes {
     pub(crate) android_app: Option<AndroidApp>,
-    pub(crate) ignore_volume_keys: bool,
 }
 
 impl Default for PlatformSpecificEventLoopAttributes {
     fn default() -> Self {
         Self {
             android_app: Default::default(),
-            ignore_volume_keys: true,
         }
     }
 }
@@ -202,7 +199,6 @@ impl<T: 'static> EventLoop<T> {
             running: false,
             pending_redraw: false,
             cause: StartCause::Init,
-            ignore_volume_keys: attributes.ignore_volume_keys,
             combining_accent: None,
         })
     }
@@ -433,49 +429,39 @@ impl<T: 'static> EventLoop<T> {
                     }
                 }
             }
-            InputEvent::KeyEvent(key) => {
-                match key.key_code() {
-                    // Flag keys related to volume as unhandled. While winit does not have a way for applications
-                    // to configure what keys to flag as handled, this appears to be a good default until winit
-                    // can be configured.
-                    Keycode::VolumeUp | Keycode::VolumeDown | Keycode::VolumeMute
-                        if self.ignore_volume_keys =>
-                    {
-                        input_status = InputStatus::Unhandled
-                    }
-                    keycode => {
-                        let state = match key.action() {
-                            KeyAction::Down => event::ElementState::Pressed,
-                            KeyAction::Up => event::ElementState::Released,
-                            _ => event::ElementState::Released,
-                        };
+            InputEvent::KeyEvent(key) => match key.key_code() {
+                keycode => {
+                    let state = match key.action() {
+                        KeyAction::Down => event::ElementState::Pressed,
+                        KeyAction::Up => event::ElementState::Released,
+                        _ => event::ElementState::Released,
+                    };
 
-                        let key_char = keycodes::character_map_and_combine_key(
-                            android_app,
-                            key,
-                            &mut self.combining_accent,
-                        );
+                    let key_char = keycodes::character_map_and_combine_key(
+                        android_app,
+                        key,
+                        &mut self.combining_accent,
+                    );
 
-                        let event = event::Event::WindowEvent {
-                            window_id: window::WindowId(WindowId),
-                            event: event::WindowEvent::KeyboardInput {
-                                device_id: event::DeviceId(DeviceId(key.device_id())),
-                                event: event::KeyEvent {
-                                    state,
-                                    physical_key: keycodes::to_physical_key(keycode),
-                                    logical_key: keycodes::to_logical(key_char, keycode),
-                                    location: keycodes::to_location(keycode),
-                                    repeat: key.repeat_count() > 0,
-                                    text: None,
-                                    platform_specific: KeyEventExtra {},
-                                },
-                                is_synthetic: false,
+                    let event = event::Event::WindowEvent {
+                        window_id: window::WindowId(WindowId),
+                        event: event::WindowEvent::KeyboardInput {
+                            device_id: event::DeviceId(DeviceId(key.device_id())),
+                            event: event::KeyEvent {
+                                state,
+                                physical_key: keycodes::to_physical_key(keycode),
+                                logical_key: keycodes::to_logical(key_char, keycode),
+                                location: keycodes::to_location(keycode),
+                                repeat: key.repeat_count() > 0,
+                                text: None,
+                                platform_specific: KeyEventExtra {},
                             },
-                        };
-                        callback(event, self.window_target());
-                    }
+                            is_synthetic: false,
+                        },
+                    };
+                    callback(event, self.window_target());
                 }
-            }
+            },
             _ => {
                 warn!("Unknown android_activity input event {event:?}")
             }
